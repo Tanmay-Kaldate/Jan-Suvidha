@@ -6,7 +6,7 @@ import '../config/appconfig.dart';
 import 'user_widgets/common_widgets.dart';
 
 class OtpVerification extends StatefulWidget {
-  final String verificationType;
+  final String verificationType; // 'email' or 'phone'
   final String contactInfo;
   const OtpVerification(
       {super.key, required this.verificationType, required this.contactInfo});
@@ -18,19 +18,21 @@ class OtpVerification extends StatefulWidget {
 class _OtpVerificationState extends State<OtpVerification> {
   final List<TextEditingController> _controllers = List.generate(
     4,
-    (index) => TextEditingController(),
+        (index) => TextEditingController(),
   );
 
   final List<FocusNode> _focusNodes = List.generate(
     4,
-    (index) => FocusNode(),
+        (index) => FocusNode(),
   );
-  late Timer _resendTimer;
+
+  Timer? _resendTimer;
   int _resendTimeout = 60;
   bool _canResend = false;
 
   @override
   void dispose() {
+    _resendTimer?.cancel();
     for (var controller in _controllers) {
       controller.dispose();
     }
@@ -47,12 +49,16 @@ class _OtpVerificationState extends State<OtpVerification> {
   }
 
   void _startResendTimer() {
-    _canResend = false;
-    _resendTimer = Timer.periodic(Duration(seconds: 1), (timer) {
+    setState(() {
+      _resendTimeout = 60;
+      _canResend = false;
+    });
+    _resendTimer?.cancel();
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_resendTimeout > 0) {
         setState(() => _resendTimeout--);
       } else {
-        _canResend = true;
+        setState(() => _canResend = true);
         timer.cancel();
       }
     });
@@ -63,29 +69,27 @@ class _OtpVerificationState extends State<OtpVerification> {
       content: Text(message),
       backgroundColor: Colors.red,
       duration: const Duration(seconds: 3),
-      behavior: SnackBarBehavior.floating, // Makes it float above content
-      margin: EdgeInsets.only(
-        bottom: MediaQuery.of(context).size.height - 100, // Positions near top
-        left: 20,
-        right: 20,
-      ),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          bottom: Radius.circular(10), // Rounded bottom corners
-        ),
-      ),
+      behavior: SnackBarBehavior.floating,
     ));
   }
 
-  void _resendOtp() {
-    // Call send-otp API
-    http.post(
-      Uri.parse(
-          '${AppConfig.apiBaseUrl}/user/verify/verify-${widget.verificationType}'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({widget.verificationType: widget.contactInfo}),
-    );
-    _startResendTimer();
+  void _resendOtp() async {
+    try {
+      // Logic fix: Ensure we call 'send' endpoints, not 'verify' endpoints for resending
+      final endpoint = widget.verificationType == 'email' ? 'email-otp' : 'phone-otp';
+
+      // Match the JSON key your backend controller expects
+      final bodyKey = widget.verificationType == 'email' ? 'email' : 'phoneNumber';
+
+      await http.post(
+        Uri.parse('${AppConfig.apiBaseUrl}/user/verify/$endpoint'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({bodyKey: widget.contactInfo}),
+      );
+      _startResendTimer();
+    } catch (e) {
+      _showErrorSnackBar('Failed to resend OTP');
+    }
   }
 
   @override
@@ -114,6 +118,7 @@ class _OtpVerificationState extends State<OtpVerification> {
                 SizedBox(height: screenHeight * 0.015),
                 Text(
                   'Enter the OTP sent to ${widget.contactInfo}',
+                  textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: screenWidth * 0.04,
                     color: const Color.fromARGB(255, 88, 88, 88),
@@ -124,7 +129,7 @@ class _OtpVerificationState extends State<OtpVerification> {
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: List.generate(
                     4,
-                    (index) => SizedBox(
+                        (index) => SizedBox(
                       width: screenWidth * 0.15,
                       height: screenWidth * 0.15,
                       child: TextField(
@@ -137,22 +142,8 @@ class _OtpVerificationState extends State<OtpVerification> {
                         decoration: InputDecoration(
                           counterText: '',
                           border: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(screenWidth * 0.025),
+                            borderRadius: BorderRadius.circular(screenWidth * 0.025),
                             borderSide: BorderSide(color: baseColor),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(screenWidth * 0.025),
-                            borderSide: BorderSide(color: baseColor),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius:
-                                BorderRadius.circular(screenWidth * 0.025),
-                            borderSide: BorderSide(
-                              color: baseColor,
-                              width: screenWidth * 0.005,
-                            ),
                           ),
                         ),
                         onChanged: (value) {
@@ -184,29 +175,28 @@ class _OtpVerificationState extends State<OtpVerification> {
                             ? 'verify-email'
                             : 'verify-phone';
 
+                        // Fix: Match backend controller keys ('email' or 'phoneNumber')
+                        final bodyKey = widget.verificationType == 'email' ? 'email' : 'phoneNumber';
+
                         final response = await http.post(
-                          Uri.parse(
-                              '${AppConfig.apiBaseUrl}/user/verify/$endpoint'),
+                          Uri.parse('${AppConfig.apiBaseUrl}/user/verify/$endpoint'),
                           headers: {'Content-Type': 'application/json'},
                           body: jsonEncode({
-                            widget.verificationType: widget.contactInfo,
+                            bodyKey: widget.contactInfo,
                             'otp': otp
                           }),
                         );
 
-                        if (response.statusCode == 200) {
+                        final data = jsonDecode(response.body);
+
+                        if (response.statusCode == 200 && data['success'] == true) {
+                          // This returns 'true' to signup.dart to trigger setState(() => _isEmailVerified = true)
                           Navigator.pop(context, true);
                         } else {
-                          final error = jsonDecode(response.body)['message'] ??
-                              'Verification failed';
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(error)),
-                          );
+                          _showErrorSnackBar(data['message'] ?? 'Invalid OTP');
                         }
                       } catch (e) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Error: ${e.toString()}')),
-                        );
+                        _showErrorSnackBar('Connection Error');
                       }
                     },
                     style: ElevatedButton.styleFrom(
@@ -237,28 +227,17 @@ class _OtpVerificationState extends State<OtpVerification> {
             ),
           ),
           const Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
+            bottom: 0, left: 0, right: 0,
             child: BottomRoundedBar(),
           ),
           Positioned(
             bottom: screenHeight * 0.03,
             left: screenWidth * 0.05,
-            child: SizedBox(
-              width: screenWidth * 0.12,
-              height: screenWidth * 0.12,
-              child: FloatingActionButton(
-                onPressed: () => Navigator.pop(context),
-                shape: const CircleBorder(),
-                backgroundColor: const Color.fromARGB(255, 254, 183, 101),
-                mini: true,
-                child: Icon(
-                  Icons.arrow_back_ios_new_sharp,
-                  color: const Color.fromARGB(255, 15, 62, 129),
-                  size: screenWidth * 0.06,
-                ),
-              ),
+            child: FloatingActionButton(
+              onPressed: () => Navigator.pop(context, false),
+              backgroundColor: const Color.fromARGB(255, 254, 183, 101),
+              mini: true,
+              child: const Icon(Icons.arrow_back_ios_new, color: Color.fromARGB(255, 15, 62, 129)),
             ),
           ),
         ],
